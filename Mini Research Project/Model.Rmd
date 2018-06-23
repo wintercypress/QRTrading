@@ -196,7 +196,7 @@ df_new <- merge(tbl, WTI)
 cor(df_new[,-1])
 ```
 
-####>> The correlation betwwen PC1 and WTI is 0.44, because the sub-industry of APA is Oil & Gas Exploration & Production, it may have higher correlation with Oil & Gas index, commodity index or PMI. (But those data cannot be downloaded from website, it is not feasible to verify this guess)
+#### >> The correlation betwwen PC1 and WTI is 0.44, because the sub-industry of APA is Oil & Gas Exploration & Production, it may have higher correlation with Oil & Gas index, commodity index or PMI. (But those data cannot be downloaded from website, it is not feasible to verify this guess)
 
 ### III. Further thoughts
 
