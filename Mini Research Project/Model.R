@@ -8,7 +8,7 @@ library(reshape2)
 library(readxl)
 
 
-# Function: Calculate return
+## Function: Calculate monthly return
 get_return <- function(symbol, start, end, compression = 'm'){
         price <- get.hist.quote(instrument = symbol, start = start, end = end, compression = compression, quote = "Close")
         Date <- index(price)
@@ -24,7 +24,7 @@ get_return <- function(symbol, start, end, compression = 'm'){
         return(returns)
 }
 
-# Data range and query stock
+## Data range and query stock
 
 start <- '2012-06-01'
 
@@ -41,15 +41,14 @@ returns <- get_return(query_stock, start, end)
 returns$Date <- as.yearmon(returns$Date)
 
 
-# Fama French 5 factors
+# Fama French 3 factors
 
 ff_factors <- read.csv("F-F_Research_Data_Factors.CSV", header = TRUE, skip = 3, nrows = 1102)
 
 colnames(ff_factors)[1] <- 'Date'
 
-ff_factors$Date <- as.yearmon(as.Date(paste(ff_factors$Date, '01', sep = ''), 
-                                      format='%Y%m%d')
-                              )
+ff_factors$Date <- as.yearmon(as.Date(paste(ff_factors$Date, '01', sep = ''), format='%Y%m%d'))
+
 ff_factors[,-1] <- ff_factors[,-1]/100
 
 # Fama French Momentum
@@ -58,9 +57,7 @@ ff_mom <- read.csv("F-F_Momentum_Factor.CSV", header = TRUE, skip = 13, nrows = 
 
 colnames(ff_mom)[1] <- 'Date'
 
-ff_mom$Date <- as.yearmon(as.Date(paste(ff_mom$Date, '01', sep = ''), 
-                                      format='%Y%m%d')
-)
+ff_mom$Date <- as.yearmon(as.Date(paste(ff_mom$Date, '01', sep = ''), format='%Y%m%d'))
 
 ff_mom[,-1] <- ff_mom[,-1]/100
 
@@ -140,4 +137,3 @@ WTI <- WTI %>% mutate(WTI.return = WTI/lag(WTI)-1) %>% select(-WTI)
 
 df_new <- merge(tbl, WTI)
 cor(df_new[,-1])
-
