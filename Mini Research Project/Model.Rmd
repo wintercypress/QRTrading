@@ -1,0 +1,481 @@
+---
+title: "Research Project"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+```{r include=FALSE}
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+```
+
+#### Load Packages
+```{r warning=FALSE, message=FALSE}
+
+library(quantmod)
+library(tidyverse)
+library(XLConnect)
+library(tseries)
+library(car)
+
+```
+
+#### Function: Obtain Prices
+
+```{r}
+
+get_prc <- function(symbol, start, end, compression = 'm'){
+        
+        price <- get.hist.quote(instrument = symbol, start = start, end = end, compression = compression, quote = "Close", quiet = TRUE)
+        
+        Date <- index(price)
+
+        price <- (price %>% as.data.frame()
+                  %>% mutate(Date = Date)
+                  %>% select(Date, everything())
+        )
+        
+        return(price)
+}
+
+```
+
+####  Function: Calculate Monthly Returns
+
+```{r warning=FALSE, message=FALSE}
+
+get_return <- function(symbol, start, end, compression = 'm'){
+        
+        price <- get.hist.quote(instrument = symbol, start = start, end = end, compression = compression, quote = "Close", quiet = TRUE)
+        
+        Date <- index(price)
+
+        price <- (price %>% as.data.frame()
+                  %>% mutate(Date = Date)
+                  %>% select(Date, everything())
+        )
+
+        returns <- price %>% mutate(returns = Close/lag(Close) - 1) %>% select(-Close) %>% filter(complete.cases(returns))
+
+        returns <- returns %>% as.tibble()
+        
+        return(returns)
+}
+
+```
+
+
+#### Function: Variance Inflation Factor Test
+
+```{r warning=FALSE, message=FALSE}
+
+VIF_test <- function(df, y){
+        
+        s <- 11
+        
+        # If VIF > 10, exclude factor
+        
+        while(sum(s > 10) != 0){ 
+                
+                model <- lm(df[,y] ~ ., data = df[,names(df) != y])
+                
+                s <- vif(model)
+                
+                df <- df %>% select(-one_of(names(s[s >10])))
+                
+        }
+        
+        # Remove factor with VIF > 4 after factors of high collinearity (VIF > 10) has been removed
+        
+        while(sum(s > 4) != 0){
+                
+                model <- lm(df[,y] ~ ., data = df[,names(df) != y])
+                
+                s <- vif(model)
+                
+                df <- df %>% select(-one_of(names(s[s >4])))
+                
+        }
+        
+        return(df)
+        
+}
+
+```
+
+####  Data range and query stock
+```{r warning=FALSE, message=FALSE}
+
+start <- '1998-12-31'
+
+end <- '2018-06-02'
+
+query_stock <- 'MSFT'
+
+```
+
+###  I. Carhart four-factor model
+
+#### 1) Obtain stock returns
+```{r warning=FALSE, message=FALSE}
+
+returns <- get_return(query_stock, start, end)
+
+returns$Date <- as.yearmon(returns$Date)
+
+```
+
+#### 2) Data: Fama French 3 factors
+```{r warning=FALSE, message=FALSE}
+ff_factors <- read.csv("F-F_Research_Data_Factors.CSV", header = TRUE, skip = 3, nrows = 1102)
+
+colnames(ff_factors)[1] <- 'Date'
+
+# Format Date into yearmon
+
+ff_factors$Date <- as.yearmon(as.Date(paste(ff_factors$Date, '01', sep = ''), format='%Y%m%d'))
+
+ff_factors[,-1] <- ff_factors[,-1]/100
+```
+
+#### 3) Data: Fama French Momentum
+```{r warning=FALSE, message=FALSE}
+
+ff_mom <- read.csv("F-F_Momentum_Factor.CSV", header = TRUE, skip = 13, nrows = 1095)
+
+colnames(ff_mom)[1] <- 'Date'
+
+# Format Date into yearmon
+
+ff_mom$Date <- as.yearmon(as.Date(paste(ff_mom$Date, '01', sep = ''), format='%Y%m%d'))
+
+ff_mom[,-1] <- ff_mom[,-1]/100
+```
+
+#### 4) Run Rolling Regression
+```{r warning=FALSE, message=FALSE}
+# Merge stock returns, ff_mom, ff_factors by Date
+
+df <- Reduce(function(x,y) merge(x, y, by = 'Date'), list(ff_factors, ff_mom, returns))
+
+# Calculate excess stock return
+
+df <- df %>% mutate(Ex.return = returns - RF) 
+
+# Run rolling regression with window length: 120 months
+
+df <- df %>% select(-c(RF, returns))
+
+ff_list <- list()
+
+from <- 120
+
+for (i in from:nrow(df)){
+        
+        # Data within the window
+        
+        tem_data <- df[(i-from+1):i, -1]
+        
+        # Regression summary
+        
+        tem_s <- summary(lm(Ex.return ~., data = tem_data))
+        
+        # Filter out factors that are significant at 95% confidence level
+        
+        tem_ff <- rownames(tem_s$coefficients)
+        
+        ff_list[[i]] <- tem_ff[tem_s$coefficients[,4] < 0.05]
+}
+
+# Count significant factors occurence in the recent 60 months
+
+table(do.call(rbind, tail(ff_list, 60)))
+
+```
+
+#### >> According to the Carhart four-factor model, market return and SMB are significant for recent 60 months. Those two factors will be combined with valuation model.
+
+### II. Valuation Model
+
+#### 1) Load Quarterly Fundamentals 
+
+```{r warning=FALSE, message=FALSE}
+
+# Fundamentals data frequenct: Quarterly
+
+fund_qtr <- read.csv("Fundamentals.csv", header = T)
+
+```
+
+#### 2) Fundamental Factors
+
+##### a) Valuation Factors: Price/Sales, Price/Earnings, Dividend Yield
+
+```{r}
+
+Mod2_factors <- fund_qtr %>% mutate(Date = datadate, 
+                                    Price_Sales = Price/Sales, 
+                                    P_E = Price/NI,
+                                    Div_yield = Div/Price)
+
+# Format date
+
+Mod2_factors$Date <- as.Date(as.character(Mod2_factors$Date), 
+                             format = '%Y%m%d')
+
+```
+
+##### b) Growth Factors: 3-month Sales Growth, 1-year Sales Growth, 3-month EPS Growth, 1-year EPS Growth
+
+```{r}
+
+Mod2_factors <- Mod2_factors %>% mutate(Sales_g3M = Sales/lag(Sales,1)-1,
+                                        Sales_g1Y = Sales/lag(Sales,3)-1,
+                                        EPS_g3M = EPS/lag(EPS,1)-1,
+                                        EPS_g1Y = EPS/lag(EPS,3)-1)
+
+```
+
+##### c) Quality Factors: Current Ratio, Asset/Equity, Working Capital/Asset
+
+```{r}
+
+Mod2_factors <- Mod2_factors %>% mutate(Current_ratio = CA/CL,
+                                        Asset_Equity = TA/TE,
+                                        WorkingCap_Asset = (CA-CL)/TA)
+
+```
+
+##### d) Efficiency Factors: Capex/Asset, Capex/Sales, Operating CF/Asset
+
+```{r}
+
+Mod2_factors <- Mod2_factors %>% mutate(Capex_Asset = CapEx/TA,
+                                        Capex_Sales = CapEx/Sales,
+                                        OptingCF_Asset = OptingCF/TA)
+
+```
+
+
+##### e) Profitability Factors: ROE, ROA, ROIC
+```{r}
+
+Mod2_factors <- Mod2_factors %>% mutate(NI_4Q = rollsum(NI, 4, fill = NA, align = 'right'),
+                                        EQ_2Q = rollmean(TE, 2, fill = NA, align = 'right'),
+                                        TA_2Q = rollmean(TA, 2, fill = NA, align = 'right'),
+                                        IC_2Q = rollmean(IC, 2, fill = NA, align = 'right'),
+                                        ROE = NI_4Q/EQ_2Q,
+                                        ROA = NI_4Q/TA_2Q,
+                                        ROIC = NI_4Q/IC_2Q)
+
+Mod2_factors <- Mod2_factors %>% select(-one_of(c('NI_4Q', 'EQ_2Q', 'TA_2Q', 'IC_2Q')))
+
+```
+
+
+##### f) Size Factors: Book/Market Value 
+
+```{r}
+
+Mod2_factors <- Mod2_factors %>% mutate(B_M = TE/Mkt.Value)
+                                        
+```
+
+##### e) Valuation factor table
+```{r warning=FALSE, message=FALSE}
+
+tem <- colnames(fund_qtr)
+
+Mod2_factors <- Mod2_factors %>% select(-one_of(tem))
+
+```
+
+
+#### 3) Price Factors: 6-month Momentum, 1-month Mean Reversion
+
+```{r warning=FALSE, message=FALSE}
+
+# Obtain Prices
+# Data Frequency: Monthly 
+
+query_price <- get_prc(query_stock, Mod2_factors$Date[1], Mod2_factors$Date[nrow(Mod2_factors)])
+
+query_price$Date <- query_price$Date-1
+
+# Calculate price factors
+
+prc_factors <- (query_price %>% mutate(Return = Close/lag(Close)-1,
+                                       Mom_6M = Close/lag(Close,2)-1,
+                                       Avg_12M = rollmean(Return,4, fill = NA, align = 'right'),
+                                       Std_12M = rollapply(Return, 4, sd, fill = NA, align = 'right'),
+                                       MeanRev_1M = (Return-Avg_12M)/Std_12M)
+                            %>% select(Date, Return, Mom_6M, MeanRev_1M))
+
+
+```
+
+
+#### 4) Fama-French factors: Market, SMB
+```{r warning=FALSE, message=FALSE}
+
+mkt <- ff_factors %>% select(Date, Mkt.RF, SMB, RF)
+
+mkt$Date <- as.Date(mkt$Date, frac = 1)
+
+```
+
+
+#### 5) Market Risk Factor
+```{r warning=FALSE, message=FALSE}
+
+# Market beta from 60-month rolling regression 
+# Data Frequency: Monthly
+
+# Obtain market excess returns and risk-free returns
+
+tem1 <- ff_factors %>% select(Date, Mkt.RF, RF)
+
+tem1$Date <- as.Date(tem1$Date, frac = 1)
+
+# Obtain monthly stock returns
+
+tem2 <- get_return(query_stock, tem1$Date[1], tem1$Date[nrow(tem1)])
+
+tem2$Date <- tem2$Date-1
+
+# Calculate stock excess returns
+
+Mod2_df <- merge(tem1, tem2) %>% mutate(Ex.Return = returns - RF) 
+
+# Run rolling regression and obtain betas
+
+betas <- rollapply(data = Mod2_df[,c('Ex.Return','Mkt.RF')], 
+                   width = 60, 
+                   FUN = function(x) {reg = lm(Ex.Return ~ Mkt.RF, data = as.data.frame(x));
+                                      return(as.numeric(reg$coef[2]))},
+                   by.column = FALSE, 
+                   align = 'right', 
+                   fill = NA)     
+                          
+
+```
+
+#### 6) Lag Factors for Crtain Period and transform into quarterly data
+
+##### a) Lag valuation factors for two quarter
+
+```{r warning=FALSE, message=FALSE}
+
+Mod2_factors$Date <- lead(Mod2_factors$Date, 2)
+
+```
+
+##### b) Lag price factors for one month
+
+```{r warning=FALSE, message=FALSE}
+
+prc_factors$Date <- lead(prc_factors$Date, 1)
+
+prc_factors <- prc_factors %>% filter(Date %in% Mod2_factors$Date)
+
+```
+
+##### c) Lag market risk factor for one month
+```{r}
+
+Mod2_df <- (Mod2_df %>% mutate(beta = lag(betas))
+                    %>% filter(Date %in% Mod2_factors$Date))
+
+Mod2_df <- Mod2_df %>% select(Date, beta)
+
+```
+
+##### d) Lag Fama-French factors for one month
+
+```{r}
+
+mkt$Date <- lead(mkt$Date, 1)
+
+mkt <- mkt %>% filter(Date %in% Mod2_factors$Date)
+
+```
+
+
+#### 5) Aggregate Factor Table
+
+```{r warning=FALSE, message=FALSE}
+
+# Combine valuation factors, price factors, market risk factor and Fama-French factors
+
+factors_all <- Reduce(function(x,y) merge(x, y, by = 'Date'),
+                      list(Mod2_factors, prc_factors, Mod2_df, mkt))
+
+```
+
+#### 6) Cope with Collinearity in Valuation Factors with Straightforward Method
+
+```{r}
+
+# Give equal weights to highly correlated factors to create indexes
+
+factors_all <- factors_all %>% mutate(quality = (Current_ratio+Asset_Equity+WorkingCap_Asset)/3,
+                                      efficiency = (Capex_Asset+Capex_Sales)/2,
+                                      growth1 = (Sales_g3M+Sales_g1Y)/2,
+                                      growth2 = (EPS_g3M+EPS_g1Y)/2,
+                                      Profitability = (ROA+ROE+ROIC)/3)
+
+# Keep indexes and exclude those factors
+
+exclude_fac <- c('Current_ratio', 'Asset_Equity', 'WorkingCap_Asset', 'Capex_Asset', 'Capex_Sales', 'Sales_g3M', 'Sales_g1Y', 'ROA', 'ROE', 'ROIC', 'EPS_g3M', 'EPS_g1Y')
+
+factors_all <- factors_all %>% select(-one_of(exclude_fac))
+
+```
+
+
+### III. Factor Analysis of Contemporaneous Returns
+
+```{r warning=FALSE, message=FALSE}
+
+# Calculate excess return of query stock
+
+factors_all <- factors_all %>% mutate(Ex.return = Return-RF) %>% select(-Return, -RF)
+
+output <- list()
+
+# Data window: 60 quarters
+
+from <- 60
+
+# Filter factors with VIF test to avoid collinearity
+
+for (i in from:nrow(factors_all)){
+        
+        # Data within the window
+        
+        tem_data <- factors_all[(i-from+1):i, ]
+        
+        # Select factors with VIF test
+        
+        tem_factors <- VIF_test(tem_data[,-1], 'Ex.return')
+        
+        # Output data into list
+        
+        output[[i]] <- summary(lm(Ex.return ~., data = tem_factors))
+        
+        # Name list elements by the date of contemporaneous Returns
+        
+        names(output)[i] <- toString(factors_all$Date[i])
+}
+
+# Remove empty lists
+
+output[sapply(output, is.null)] <- NULL
+
+# Print results
+
+output
+```
+
